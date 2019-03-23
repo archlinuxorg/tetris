@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python
 import os
 import sys
 import pickle
@@ -6,23 +6,51 @@ import random
 
 
 class BlockMap:
-    def __init__(self, squares):
-        self.squares = squares
-        self.width = len(squares[0])
-        self.height = len(squares)
+    def link_proto(self, proto):
+        self.__squares = proto
+        self.width = len(proto[0])
+        self.height = len(proto)
 
-    def draw(self, painter, offset_x=0, offset_y=0):
+    def alloc(self, w, h):
+        self.width = w
+        self.height = h
+        self.__squares = [[False for x in range(0, w)] for y in range(0, h)]
+
+    def in_bounds(self, x, y):
+        return 0 <= x < self.width \
+           and 0 <= y < self.height
+
+    def get(self, x, y):
+        return self.__squares[y][x]
+
+    def set(self, x, y):
+        self.__squares[y][x] = True
+
+    def check_row(self, y):
+        for block in self.__squares[y]:
+            if not block:
+                return False
+        return True
+
+    def burn_row(self, y):
+        for current_index in reversed(range(1, y + 1)):
+            self.__squares[current_index] = self.__squares[current_index - 1]
+        self.__squares[0] = [False for x in range(0, self.width)]
+
+    def consume(self, map, offset_x, offset_y):
+        map.for_each(lambda x, y: self.set(x + offset_x, y + offset_y))
+
+    def for_each(self, f):
         for x in range(0, self.width):
             for y in range(0, self.height):
-                if self.squares[y][x]:
-                    painter.drawRect((x + offset_x) * 10 + 1, (y + offset_y) * 10 + 1, 8, 8)
+                if self.get(x, y):
+                    f(x, y)
 
 
 class Shape(BlockMap):
     def __init__(self, sq):
-        BlockMap.__init__(self, sq[0])
+        self.link_proto(sq[0])
         self.full_sq_data = sq
-        self.sample = BlockMap(sq[0])
         self.angle = 0
         self.x = 0
         self.y = 0
@@ -30,9 +58,6 @@ class Shape(BlockMap):
     def setPos(self, pos):
         self.x = pos[0]
         self.y = pos[1]
-
-    def draw(self, painter):
-        BlockMap.draw(self, painter, self.x, self.y)
 
     def tryMove(self, field, vec_x, vec_y):
         if self.collision(field, vec_x, vec_y):
@@ -50,10 +75,10 @@ class Shape(BlockMap):
     def tryRotate(self, field):
         dx = self.width / 2 - 1
         dy = self.height / 2 - 1
-        delta = dx - dy
+        delta = int(dx - dy)    #todo: remove int_cast
 
         self.angle = self.nextAngleID()
-        BlockMap.__init__(self, self.full_sq_data[self.angle])
+        self.link_proto(self.full_sq_data[self.angle])
 
         if not self.collision(field, delta, -delta):
             self.x += delta
@@ -73,7 +98,7 @@ class Shape(BlockMap):
             return True
         else:
             self.angle = self.prevAngleID()
-            BlockMap.__init__(self, self.full_sq_data[self.angle])
+            self.link_proto(self.full_sq_data[self.angle])
             return False
 
     def nextAngleID(self):
@@ -88,12 +113,6 @@ class Shape(BlockMap):
         else:
             return self.angle - 1
 
-    def mergeToField(self, field):
-        for block_x in range(0, self.width):
-            for block_y in range(0, self.height):
-                if self.squares[block_y][block_x]:
-                    field.squares[block_y + self.y][block_x + self.x] = True
-
     def collision(self, field, offset_x=0, offset_y=0):
         if field.blockOutsideBorders(self.x + offset_x,
                                      self.y + offset_y):
@@ -104,20 +123,21 @@ class Shape(BlockMap):
 
         for block_x in range(0, self.width):
             for block_y in range(0, self.height):
-                if self.squares[block_y][block_x]:
-                    if field.squares[self.y + block_y + offset_y]\
-                                    [self.x + block_x + offset_x]:
+                if self.get(block_x, block_y):
+                    if field.get(self.x + block_x + offset_x
+                                ,self.y + block_y + offset_y):
                         return True
         return False
 
 
 class Field(BlockMap):
     def __init__(self, w=10, h=20):
-        BlockMap.__init__(self, [[False for x in range(0, w)] for y in range(0, h)])
+        self.alloc(w, h)
 
-    def draw(self, painter):
-        BlockMap.draw(self, painter)
-        painter.drawRect(0, 0, self.width * 10, self.height * 10)
+    def make_copy(self):
+        result = Field(self.width, self.height)
+        result.consume(self, 0, 0)
+        return result
 
     def blockOutsideBorders(self, pos_x, pos_y):
         x_outside = pos_x < 0 or pos_x >= self.width
@@ -125,23 +145,12 @@ class Field(BlockMap):
         return x_outside or y_outside
 
     def defaultRespawnPos(self, shape):
-        return self.width / 2 - shape.width / 2, 0
+        return int(self.width / 2) - int(shape.width / 2), 0
 
     def updateRows(self):
         for current_index in reversed(range(0, self.height)):
-            while self.fullRow(current_index):
-                self.burnRow(current_index)
-
-    def fullRow(self, row_index):
-        for block in self.squares[row_index]:
-            if not block:
-                return False
-        return True
-
-    def burnRow(self, row_index):
-        for current_index in reversed(range(1, row_index + 1)):
-            self.squares[current_index] = self.squares[current_index - 1]
-        self.squares[0] = [False for x in range(0, self.width)]
+            while self.check_row(current_index):
+                self.burn_row(current_index)
 
 
 class TetrisCore:
@@ -167,13 +176,13 @@ class TetrisCore:
             self.shape.tryRotate(self.field)
 
     def loadShapePrototypes(self, filename):
-        return pickle.load(open(filename, "r"))
+        return pickle.load(open(filename, "rb"))
 
     def randomShape(self):
         return Shape(self.shapePrototypes[random.randint(0, len(self.shapePrototypes) - 1)])
 
     def onShapeLanding(self):
-        self.shape.mergeToField(self.field)
+        self.field.consume(self.shape, self.shape.x, self.shape.y)
         self.field.updateRows()
         self.shape = self.trySpawnShape(self.nextShape)
         self.nextShape = self.randomShape()
@@ -248,7 +257,10 @@ if pygame_ready:
 if not (pyqt_ready or glut_ready or pygame_ready):
     print("No GUI installed! Try pyqt5, pygl or pygame.")
 
-gui = raw_input()
+if sys.version_info < (3, 0):
+    gui = raw_input()
+else:
+    gui = input()
 
 
 class AbstractTetrisWidget:
@@ -274,10 +286,16 @@ class AbstractTetrisWidget:
             self.core.onKey(translated_key)
             self.update()
 
+    def drawBlockMap(self, painter, map, off_x, off_y, draw_frame):
+        map.for_each(lambda x, y: painter.drawRect((x + off_x) * 10 + 1, (y + off_y) * 10 + 1, 8, 8))
+        if draw_frame:
+            painter.drawRect(off_x * 10, off_y * 10, map.width * 10, map.height * 10)
+
     def onPaint(self, painter):
-        self.core.field.draw(painter)
-        self.core.shape.draw(painter)
-        self.core.nextShape.sample.draw(painter, self.core.field.width + 5, 8)
+        painted_field = self.core.field.make_copy()
+        painted_field.consume(self.core.shape, self.core.shape.x, self.core.shape.y)
+        self.drawBlockMap(painter, painted_field, 0, 0, True)
+        self.drawBlockMap(painter, self.core.nextShape, self.core.field.width + 5, 8, False)
 
 
 if gui == '1' and pyqt_ready:
